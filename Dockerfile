@@ -7,6 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bot.py .
 
-RUN mkdir -p /app/screenshots
+RUN mkdir -p /app/data/screenshots
 
-CMD ["python", "-u", "bot.py"]
+CMD ["python", "bot.py"]

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Токены
 BOT_TOKEN = "8643812650:AAFoSrNVkmlnr-mZCCd1IfQ7FmU9Olsktes"
-ADMIN_ID = 8394493239
+ADMIN_ID = 8401268487
 
 # Пути
 DATA_DIR = os.path.join(os.path.dirname(__file__), "sber_data")

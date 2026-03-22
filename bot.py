@@ -3,7 +3,6 @@ import logging
 import sqlite3
 import os
 from datetime import datetime, timedelta
-from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
@@ -12,6 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import F
+import threading
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -30,19 +30,20 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
 # ====================== Flask веб-сервер ======================
-app = Flask(__name__)
+flask_app = Flask(__name__)
 
-@app.route('/')
+@flask_app.route('/')
 def home():
     return "🤖 СберПрайм Бот работает! Статус: Online"
 
-@app.route('/health')
+@flask_app.route('/health')
 def health():
     return "OK", 200
 
-def run_web_server():
+def run_flask():
+    """Запуск Flask сервера"""
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # ====================== База данных ======================
 def init_db():
@@ -86,6 +87,7 @@ def add_employee(user_id, phone, full_name, username):
                 (user_id, phone, full_name, username, datetime.now()))
     conn.commit()
     conn.close()
+    logger.info(f"New employee: {full_name}")
 
 def add_sale(user_id, photo_path):
     conn = sqlite3.connect(DB_PATH)
@@ -94,6 +96,7 @@ def add_sale(user_id, photo_path):
                 (user_id, photo_path, datetime.now()))
     conn.commit()
     conn.close()
+    logger.info(f"New sale from {user_id}")
 
 def get_sales_count(user_id, date):
     conn = sqlite3.connect(DB_PATH)
@@ -192,46 +195,46 @@ async def start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     
     if user_id == ADMIN_ID:
-        await message.answer("👋 Админ-панель СберПрайм\n\nИспользуйте кнопки для управления:", reply_markup=admin_keyboard())
+        await message.answer("👋 Админ-панель СберПрайм\n\nИспользуйте кнопки:", reply_markup=admin_keyboard())
         return
     
     emp = get_employee(user_id)
     if emp:
         await state.set_state(Form.screenshot)
-        await message.answer(f"👋 Здравствуйте, {emp['full_name']}!\n\n📸 Отправьте скриншот активации СберПрайм\n✅ Каждый скриншот = 1 продажа")
+        await message.answer(f"👋 {emp['full_name']}!\n\n📸 Отправьте скриншот активации СберПрайм")
     else:
         keyboard = ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
             resize_keyboard=True, one_time_keyboard=True
         )
         await state.set_state(Form.phone)
-        await message.answer("🌟 Добро пожаловать!\n\n📞 Отправьте номер телефона:", reply_markup=keyboard)
+        await message.answer("📞 Отправьте номер телефона:", reply_markup=keyboard)
 
 @dp.message(Form.phone)
 async def get_phone(message: types.Message, state: FSMContext):
     if message.contact:
         await state.update_data(phone=message.contact.phone_number)
         await state.set_state(Form.full_name)
-        await message.answer("✅ Спасибо! Теперь отправьте ваше ФИО (Фамилия Имя Отчество).", reply_markup=ReplyKeyboardRemove())
+        await message.answer("✍️ Введите ФИО:", reply_markup=ReplyKeyboardRemove())
     else:
-        await message.answer("❌ Пожалуйста, используйте кнопку для отправки номера телефона")
+        await message.answer("❌ Используйте кнопку")
 
 @dp.message(Form.full_name)
 async def get_fullname(message: types.Message, state: FSMContext):
     data = await state.get_data()
     full_name = message.text.strip()
     if not full_name:
-        return await message.answer("❌ Пожалуйста, введите ФИО")
+        return await message.answer("❌ Введите ФИО")
     
     add_employee(message.from_user.id, data['phone'], full_name, message.from_user.username)
-    await bot.send_message(ADMIN_ID, f"✅ **Новый сотрудник!**\n\n👤 {full_name}\n🆔 ID: {message.from_user.id}", parse_mode="Markdown")
+    await bot.send_message(ADMIN_ID, f"✅ Новый сотрудник!\n👤 {full_name}\n🆔 ID: {message.from_user.id}")
     await state.set_state(Form.screenshot)
-    await message.answer("✅ Регистрация завершена!\n\n📸 Отправляйте скриншоты активации СберПрайм")
+    await message.answer("✅ Регистрация завершена!\n📸 Отправляйте скриншоты")
 
 @dp.message(Form.screenshot)
 async def handle_screenshot(message: types.Message, state: FSMContext):
     if not message.photo:
-        return await message.answer("❌ Отправьте фото скриншота")
+        return await message.answer("❌ Отправьте фото")
     
     emp = get_employee(message.from_user.id)
     if not emp:
@@ -252,10 +255,10 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
         
         with open(filename, 'rb') as f:
             await bot.send_photo(ADMIN_ID, types.BufferedInputFile(f.read(), filename),
-                               caption=f"📸 Новая продажа!\n👤 {emp['full_name']}\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n📊 Сегодня: {today_count}")
+                               caption=f"📸 Новая продажа!\n👤 {emp['full_name']}\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     except Exception as e:
         logger.error(e)
-        await message.answer("❌ Ошибка, попробуйте еще раз")
+        await message.answer("❌ Ошибка")
 
 # ====================== Админ-команды ======================
 @dp.message(F.text == "👥 Сотрудники")
@@ -268,10 +271,10 @@ async def admin_employees(message: types.Message):
         await message.answer("📭 Нет сотрудников")
         return
     
-    text = "👥 **Сотрудники СберПрайм**\n\n"
+    text = "👥 **Сотрудники**\n\n"
     for emp in employees:
         total = get_total_sales(emp['user_id'])
-        text += f"👤 {emp['full_name']}\n   🆔 ID: {emp['user_id']}\n   📸 {total} продаж\n\n"
+        text += f"👤 {emp['full_name']}\n   📸 {total} продаж\n\n"
     
     await message.answer(text, parse_mode="Markdown", reply_markup=emp_keyboard(employees))
 
@@ -285,12 +288,12 @@ async def admin_today(message: types.Message):
         await message.answer("📭 Нет данных за сегодня")
         return
     
-    text = f"📊 **СберПрайм - {datetime.now().strftime('%d.%m.%Y')}**\n\n"
+    text = f"📊 **{datetime.now().strftime('%d.%m.%Y')}**\n\n"
     total = 0
     for name, count in stats:
         text += f"👤 {name}: {count} шт.\n"
         total += count
-    text += f"\n📈 **Всего продаж: {total}**"
+    text += f"\n📈 **Всего: {total}**"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "📅 По дате")
@@ -298,7 +301,7 @@ async def admin_ask_date(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     
-    await message.answer("📅 Введите дату в формате **ГГГГ-ММ-ДД**\n\nПример: 2026-03-21", parse_mode="Markdown")
+    await message.answer("📅 Введите дату в формате **ГГГГ-ММ-ДД**\nПример: 2026-03-21", parse_mode="Markdown")
 
 @dp.message(F.text == "📸 Все продажи")
 async def admin_all_sales(message: types.Message):
@@ -310,7 +313,7 @@ async def admin_all_sales(message: types.Message):
         await message.answer("📭 Нет данных")
         return
     
-    text = "📸 **Все продажи СберПрайм**\n\n"
+    text = "📸 **Все продажи**\n\n"
     total_all = 0
     for emp in employees:
         total = get_total_sales(emp['user_id'])
@@ -334,7 +337,7 @@ async def handle_date_input(message: types.Message):
             await message.answer(f"📭 Нет данных за {formatted_date}")
             return
         
-        text = f"📊 **СберПрайм - {formatted_date}**\n\n"
+        text = f"📊 **{formatted_date}**\n\n"
         total = 0
         for name, count in stats:
             text += f"👤 {name}: {count} шт.\n"
@@ -358,7 +361,7 @@ async def callbacks(callback: types.CallbackQuery):
         if emp:
             total = get_total_sales(user_id)
             await callback.message.edit_text(
-                f"📊 **{emp['full_name']}**\n📈 Всего продаж: {total}\n\nВыберите период:",
+                f"📊 **{emp['full_name']}**\n📈 Всего: {total}\n\nВыберите период:",
                 parse_mode="Markdown", reply_markup=date_keyboard(user_id)
             )
     
@@ -368,7 +371,7 @@ async def callbacks(callback: types.CallbackQuery):
         today = datetime.now().strftime("%Y-%m-%d")
         count = get_sales_count(user_id, today)
         await callback.message.edit_text(
-            f"📊 **{emp['full_name']}**\n📅 Сегодня: {count} продаж",
+            f"📊 **{emp['full_name']}**\n📅 Сегодня: {count}",
             parse_mode="Markdown", reply_markup=date_keyboard(user_id)
         )
     
@@ -378,35 +381,38 @@ async def callbacks(callback: types.CallbackQuery):
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         count = get_sales_count(user_id, yesterday)
         await callback.message.edit_text(
-            f"📊 **{emp['full_name']}**\n📅 Вчера: {count} продаж",
+            f"📊 **{emp['full_name']}**\n📅 Вчера: {count}",
             parse_mode="Markdown", reply_markup=date_keyboard(user_id)
         )
     
     elif data == "back_emp":
         employees = get_all_employees()
-        text = "👥 **Сотрудники СберПрайм**\n\n"
+        text = "👥 **Сотрудники**\n\n"
         for emp in employees:
             total = get_total_sales(emp['user_id'])
-            text += f"👤 {emp['full_name']}\n   🆔 ID: {emp['user_id']}\n   📸 {total} продаж\n\n"
+            text += f"👤 {emp['full_name']}\n   📸 {total} продаж\n\n"
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=emp_keyboard(employees))
     
     elif data == "back":
         await callback.message.delete()
-        await callback.message.answer("👋 Админ-панель СберПрайм", reply_markup=admin_keyboard())
+        await callback.message.answer("👋 Админ-панель", reply_markup=admin_keyboard())
     
     await callback.answer()
 
 # ====================== Запуск ======================
-async def run_bot():
-    init_db()
-    logger.info("SberBot started")
-    await dp.start_polling(bot, skip_updates=True)
-
 async def main():
-    web_thread = Thread(target=run_web_server)
-    web_thread.daemon = True
-    web_thread.start()
-    await run_bot()
+    # Сначала запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    # Даем время Flask запуститься
+    await asyncio.sleep(1)
+    
+    # Инициализируем БД и запускаем бота
+    init_db()
+    logger.info("Bot started")
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
